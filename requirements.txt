@@ -4,3 +4,7 @@ scikit-learn
 pyvis
 networkx
 python-louvain
+tmdbsimple
+sentence-transformers
+plotly
+python-dotenv
