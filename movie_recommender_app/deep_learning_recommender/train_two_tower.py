@@ -125,6 +125,8 @@ if annoy_index.f != embeddings.shape[1]:
 
 rng = np.random.default_rng(42)
 anchors, positives, negatives = [], [], []
+# NEW: also keep the row indices for eval later
+anchor_ids, positive_ids, negative_ids = [], [], []
 num_movies = len(master_df)
 
 # Try Annoy first (wider K and search_k=-1), then fallback if needed.
@@ -134,14 +136,23 @@ for movie_idx in range(num_movies):
     neighbors = annoy_index.get_nns_by_item(movie_idx, 50, search_k=-1)
     neighbors = [j for j in neighbors if j != movie_idx]
     if neighbors:
-        positive_idx = neighbors[0]
-        negative_idx = movie_idx
-        while negative_idx == movie_idx or negative_idx == positive_idx:
-            negative_idx = int(rng.integers(0, num_movies))
+        pos_idx = neighbors[0]
+        neg_idx = movie_idx
+        while neg_idx == movie_idx or neg_idx == pos_idx:
+            neg_idx = int(rng.integers(0, num_movies))
+
+        # vectors
         anchors.append(embeddings[movie_idx])
-        positives.append(embeddings[positive_idx])
-        negatives.append(embeddings[negative_idx])
+        positives.append(embeddings[pos_idx])
+        negatives.append(embeddings[neg_idx])
+
+        # indices
+        anchor_ids.append(movie_idx)
+        positive_ids.append(pos_idx)
+        negative_ids.append(neg_idx)
+
         successful += 1
+
 
 print(f"  Annoy-based triplets: {successful} / {num_movies}")
 
@@ -158,17 +169,29 @@ if successful < MIN_TRIPLETS:
     # Don’t choose itself
     np.fill_diagonal(sim, -np.inf)
     top_pos = np.argmax(sim, axis=1)  # (N,)
-    # Reset lists
+
+    # Reset lists (vectors + indices)
     anchors, positives, negatives = [], [], []
+    anchor_ids, positive_ids, negative_ids = [], [], []
+
     for i in range(num_movies):
-        positive_idx = int(top_pos[i])
-        negative_idx = i
-        while negative_idx == i or negative_idx == positive_idx:
-            negative_idx = int(rng.integers(0, num_movies))
+        pos_idx = int(top_pos[i])
+        neg_idx = i
+        while neg_idx == i or neg_idx == pos_idx:
+            neg_idx = int(rng.integers(0, num_movies))
+
+        # vectors
         anchors.append(embeddings[i])
-        positives.append(embeddings[positive_idx])
-        negatives.append(embeddings[negative_idx])
+        positives.append(embeddings[pos_idx])
+        negatives.append(embeddings[neg_idx])
+
+        # indices
+        anchor_ids.append(i)
+        positive_ids.append(pos_idx)
+        negative_ids.append(neg_idx)
+
     print(f"  [fallback] Triplets built: {len(anchors)}")
+
 
 # Ensure proper dtypes and shapes
 anchors = np.asarray(anchors, dtype=np.float32)
@@ -190,10 +213,91 @@ dataset = (
 # Peek one batch
 for batch in dataset.take(1):
     print("  Batch example shapes:", {k: v.shape for k, v in batch.items()})
+    
 # ========= 2b) Save triplets for future use =========
 triplets_path = PROCESSED_DIR / "movie_triplets.npz"
-np.savez_compressed(triplets_path, anchor=anchors, positive=positives, negative=negatives)
+np.savez_compressed(
+    triplets_path,
+    anchor=anchors, positive=positives, negative=negatives,
+    anchor_idx=np.asarray(anchor_ids, dtype=np.int32),
+    positive_idx=np.asarray(positive_ids, dtype=np.int32),
+    negative_idx=np.asarray(negative_ids, dtype=np.int32),
+)
 print(f"  Saved triplets to {triplets_path}")
+# ========= 2c) Save metadata for evaluation =========
+triplet_meta = pd.DataFrame({
+    "anchor_idx": anchor_ids,
+    "positive_idx": positive_ids,
+    "negative_idx": negative_ids,
+    "anchor_tconst": [index_to_tconst[i] for i in anchor_ids],
+    "positive_tconst": [index_to_tconst[i] for i in positive_ids],
+    "negative_tconst": [index_to_tconst[i] for i in negative_ids],
+})
+triplet_meta.to_parquet(PROCESSED_DIR / "movie_triplets_meta.parquet", index=False)
+print(f"  Saved triplet metadata to {PROCESSED_DIR / 'movie_triplets_meta.parquet'}")
+print("  Triplet metadata saved for evaluation.")
+# ========= 2d) Save the Annoy index for future use =========
+annoy_index_path = APP_DATA_DIR / "movie_triplet_index.ann"
+annoy_index.save(str(annoy_index_path))
+print(f"  Saved Annoy index for triplets: {annoy_index_path}")
+# ========= 2e) Save the index to tconst mapping =========
+index_to_tconst_path = APP_DATA_DIR / "index_to_tconst_triplets.pkl"
+pd.Series(index_to_tconst).to_pickle(index_to_tconst_path)
+print(f"  Saved index to tconst mapping: {index_to_tconst_path}")
+# ========= 2f) Save the master_df for reference =========
+master_df_path = PROCESSED_DIR / "movie_master_df.pkl"
+master_df.to_pickle(master_df_path)
+print(f"  Saved master_df for reference: {master_df_path}")
+# ========= 2g) Save the embeddings for reference =========
+embeddings_path = PROCESSED_DIR / "movie_embeddings.npy"
+np.save(embeddings_path, embeddings)
+print(f"  Saved embeddings for reference: {embeddings_path}")
+# ========= 2h) Save the Annoy index for content-based model =========
+content_annoy_path = APP_DATA_DIR / "movie_content_index.ann"
+if not content_annoy_path.exists():
+    print("[align] Rebuilding Annoy index for content-based model...")
+    content_annoy = AnnoyIndex(embeddings.shape[1], "angular")
+    for i, vec in enumerate(embeddings):
+        content_annoy.add_item(i, vec.tolist())
+    content_annoy.build(50)
+    content_annoy.save(str(content_annoy_path))
+    print(f"[align] Saved rebuilt Annoy index for content-based model: {content_annoy_path}")
+else:
+    print(f"[align] Content-based Annoy index already exists: {content_annoy_path}")
+# ========= 2i) Save the index to tconst mapping for content-based model =========
+content_index_to_tconst_path = APP_DATA_DIR / "index_to_tconst_content.pkl"
+pd.Series(index_to_tconst).to_pickle(content_index_to_tconst_path)
+print(f"[align] Saved index to tconst mapping for content-based model: {content_index_to_tconst_path}")
+# ========= 2j) Save the master_df for content-based model =========
+content_master_df_path = PROCESSED_DIR / "movie_master_df_content.pkl"
+master_df.to_pickle(content_master_df_path)
+print(f"[align] Saved master_df for content-based model: {content_master_df_path}")
+# ========= 2k) Save the embeddings for content-based model =========
+content_embeddings_path = PROCESSED_DIR / "movie_embeddings_content.npy"
+np.save(content_embeddings_path, embeddings)
+print(f"[align] Saved embeddings for content-based model: {content_embeddings_path}")
+# ========= 2l) Save the Annoy index for candidate model =========
+candidate_annoy_path = APP_DATA_DIR / "movie_candidate_index.ann"
+if not candidate_annoy_path.exists():
+    print("[align] Rebuilding Annoy index for candidate model...")
+    candidate_annoy = AnnoyIndex(embeddings.shape[1], "angular")
+    for i, vec in enumerate(embeddings):
+        candidate_annoy.add_item(i, vec.tolist())
+    candidate_annoy.build(50)
+    candidate_annoy.save(str(candidate_annoy_path))
+    print(f"[align] Saved rebuilt Annoy index for candidate model: {candidate_annoy_path}")
+else:
+    print(f"[align] Candidate model Annoy index already exists: {candidate_annoy_path}")
+    
+# ========= 2m) Save the index to tconst mapping for candidate model =========
+candidate_index_to_tconst_path = APP_DATA_DIR / "index_to_tconst_candidate.pkl"
+pd.Series(index_to_tconst).to_pickle(candidate_index_to_tconst_path)
+print(f"[align] Saved index to tconst mapping for candidate model: {candidate_index_to_tconst_path}")
+
+# ========= 2n) Save the master_df for candidate model =========
+candidate_master_df_path = PROCESSED_DIR / "movie_master_df_candidate.pkl"
+master_df.to_pickle(candidate_master_df_path)
+print(f"[align] Saved master_df for candidate model: {candidate_master_df_path}")
 
 # ========= 3) Model =========
 print("\nStep 3: Building the Two-Tower model...")
