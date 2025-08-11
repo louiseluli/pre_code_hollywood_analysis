@@ -1,5 +1,3 @@
-# movie_recommender_app/build_all_artifacts.py
-
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -15,13 +13,13 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 from annoy import AnnoyIndex
 
-print("--- Starting Full Data & Model Artifact Pipeline ---")
+print("--- Starting FINAL Pre-Code Hollywood Data & Model Pipeline ---")
 
 # --- 1. SETUP ---
 load_dotenv()
 tmdb.API_KEY = os.getenv('TMDB_API_KEY')
 if not tmdb.API_KEY:
-    print("FATAL: TMDB API key not found. Please check your .env file.")
+    print("FATAL: TMDB API key not found.")
     exit()
 
 DATA_ROOT = "../data/"
@@ -35,48 +33,46 @@ os.makedirs(PROCESSED_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(APP_DATA_DIR, exist_ok=True)
 
-# --- 2. DATA LOADING & FILTERING ---
-print("\nStep 1: Loading and filtering the definitive movie list...")
+# --- 2. DATA LOADING & FILTERING (FOR PRE-CODE HOLLYWOOD) ---
+print("\nStep 1: Loading and filtering for Pre-Code Hollywood films...")
+akas_df = pd.read_csv(os.path.join(RAW_IMDB_DIR, 'title.akas.tsv'), sep='\t', usecols=['titleId', 'region'])
+us_tconsts = set(akas_df[akas_df['region'] == 'US']['titleId'])
 titles_df = pd.read_csv(os.path.join(RAW_IMDB_DIR, "title.basics.tsv"), sep='\t', low_memory=False)
-ratings_df = pd.read_csv(os.path.join(RAW_IMDB_DIR, 'title.ratings.tsv'), sep='\t', na_values='\\N')
-movies_df = titles_df[titles_df['titleType'] == 'movie'].copy()
-relevant_movies = ratings_df[ratings_df['numVotes'] > 1000]
-master_df = movies_df[movies_df['tconst'].isin(relevant_movies['tconst'])].copy()
-master_df.dropna(subset=['genres', 'runtimeMinutes'], inplace=True)
-master_df = master_df.reset_index(drop=True)
-print(f"Created a definitive set of {len(master_df)} movies.")
 
+# --- THIS IS THE FIX ---
+# Explicitly convert 'startYear' to a numeric type.
+# 'coerce' will turn any non-numeric values (like '\N') into NaN (Not a Number).
+titles_df['startYear'] = pd.to_numeric(titles_df['startYear'], errors='coerce')
+
+movies_df = titles_df[
+    (titles_df['titleType'] == 'movie') &
+    (titles_df['startYear'].between(1929, 1934)) &
+    (titles_df['tconst'].isin(us_tconsts))
+].copy()
+master_df = movies_df.dropna(subset=['genres', 'runtimeMinutes']).reset_index(drop=True)
+print(f"Created a definitive set of {len(master_df)} Pre-Code Hollywood movies.")
+
+# (The rest of the script is the same)
 # --- 3. DATA ENRICHMENT (TMDB) ---
 print("\nStep 2: Enriching with TMDB keywords (using cache)...")
-
-# --- THIS FUNCTION IS CORRECTED ---
 def get_tmdb_data(tconst, cache_dir):
     cache_filepath = os.path.join(cache_dir, f"{tconst}.json")
     if os.path.exists(cache_filepath):
         with open(cache_filepath, 'r') as f:
             cached_data = json.load(f)
-            # Always return a tuple for consistency
             return cached_data.get('keywords', ''), cached_data.get('poster_path', '')
     try:
-        find = tmdb.Find(tconst)
-        response = find.info(external_source='imdb_id')
-        if not response['movie_results']:
-            result_dict = {"keywords": "", "poster_path": ""}
+        find = tmdb.Find(tconst); response = find.info(external_source='imdb_id')
+        if not response['movie_results']: result_dict = {"keywords": "", "poster_path": ""}
         else:
-            movie_id = response['movie_results'][0]['id']
-            movie = tmdb.Movies(movie_id)
-            keywords = movie.keywords()['keywords']
+            movie_id = response['movie_results'][0]['id']; movie = tmdb.Movies(movie_id); keywords = movie.keywords()['keywords']
             result_dict = {"keywords": ' '.join([k['name'] for k in keywords]), "poster_path": response['movie_results'][0].get('poster_path', '')}
-    except Exception:
-        result_dict = {"keywords": "", "poster_path": ""}
-    with open(cache_filepath, 'w') as f:
-        json.dump(result_dict, f)
-    # Always return a tuple for consistency
+    except Exception: result_dict = {"keywords": "", "poster_path": ""}
+    with open(cache_filepath, 'w') as f: json.dump(result_dict, f)
     return result_dict['keywords'], result_dict['poster_path']
 
 tmdb_results = [get_tmdb_data(t, CACHE_DIR) for t in tqdm(master_df['tconst'], desc="Fetching TMDB Data")]
 master_df[['keywords', 'poster_path']] = pd.DataFrame(tmdb_results, index=master_df.index)
-print("Finished enriching data.")
 
 # --- 4. CONTENT-BASED MODEL ---
 print("\nStep 3: Building Content-Based Model...")
@@ -94,7 +90,8 @@ print("Content-Based Model saved.")
 
 # --- 5. COLLABORATIVE FILTERING MODEL ---
 print("\nStep 4: Building Collaborative Filtering Model...")
-ratings_subset = ratings_df[ratings_df['tconst'].isin(master_df['tconst'])].head(1000000)
+ratings_df = pd.read_csv(os.path.join(RAW_IMDB_DIR, 'title.ratings.tsv'), sep='\t', na_values='\\N')
+ratings_subset = ratings_df[ratings_df['tconst'].isin(master_df['tconst'])].copy()
 ratings_subset['userID'] = range(len(ratings_subset))
 reader = Reader(rating_scale=(1, 10))
 data = Dataset.load_from_df(ratings_subset[['userID', 'tconst', 'averageRating']], reader)
