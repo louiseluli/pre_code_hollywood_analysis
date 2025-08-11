@@ -1,2 +1,6 @@
 pandas
 requests
+scikit-learn
+pyvis
+networkx
+python-louvain
