@@ -544,3 +544,5 @@ zipp @ file:///Users/builder/cbouss/perseverance-python-buildout/croot/zipp_1707
 zope.interface @ file:///Users/builder/cbouss/perseverance-python-buildout/croot/zope.interface_1699243689919/work
 zopfli==0.2.3.post1
 zstandard==0.23.0
+streamlit
+scikit-surprise
