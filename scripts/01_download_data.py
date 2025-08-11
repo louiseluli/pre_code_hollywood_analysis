@@ -17,6 +17,8 @@ FILES_TO_DOWNLOAD = [
     "title.principals.tsv.gz",
     "name.basics.tsv.gz",
     "title.crew.tsv.gz",
+    "title.akas.tsv.gz",
+    "title.ratings.tsv.gz", 
 ]
 
 # The directory where we will store the raw, unzipped data.
