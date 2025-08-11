@@ -249,18 +249,17 @@ print("\nStep 4: Training the model...")
 history = model.fit(dataset, epochs=5, verbose=1)
 
 # ========= 5) Save =========
-print("\nStep 5: Saving the trained candidate tower...")
+print("\nStep 5: Saving the trained towers and exports...")
 out_dir = PROJECT_ROOT / "movie_recommender_app" / "models"
 out_dir.mkdir(parents=True, exist_ok=True)
 
-# Option A (recommended): native Keras format
-keras_path = out_dir / "candidate_tower_model.keras"
-model.candidate_tower.save(str(keras_path))
-print(f"Saved Keras model to: {keras_path}")
-
-# Option B: export a TensorFlow SavedModel for serving (optional)
+query_path = out_dir / "query_tower_model.keras"
+cand_path  = out_dir / "candidate_tower_model.keras"
 savedmodel_dir = out_dir / "candidate_tower_model_saved"
+
+model.query_tower.save(str(query_path))
+model.candidate_tower.save(str(cand_path))
+print(f"Saved Keras models:\n  {query_path}\n  {cand_path}")
+
 model.candidate_tower.export(str(savedmodel_dir))
 print(f"Exported SavedModel to: {savedmodel_dir}")
-
-
