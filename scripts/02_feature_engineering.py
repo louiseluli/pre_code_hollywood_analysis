@@ -18,28 +18,20 @@ def create_feature_engineering_pipeline(input_path, output_dir):
 
     # 2. Prepare Data for Metadata Soup
     print("Aggregating cast and director data for each movie...")
-    
     directors = df[df['category'] == 'director'].groupby('tconst')['primaryName'].apply(list)
     actors = df[df['category'].isin(['actor', 'actress'])] \
         .groupby('tconst')['primaryName'] \
         .apply(lambda x: list(x.head(5)))
 
     movies_df = df[['tconst', 'primaryTitle', 'genres']].drop_duplicates(subset=['tconst']).set_index('tconst')
-    
     movies_df = movies_df.join(directors.rename('directors')).join(actors.rename('actors'))
-    
+
     # 3. Create Metadata Soup
     print("Creating metadata 'soup' for each movie...")
-    
-    # CORRECTED FUNCTION TO HANDLE MISSING (NaN) VALUES
     def create_soup(x):
-        # Use pd.notna() to check for missing values before trying string operations
         genres = x['genres'].replace(',', ' ') if pd.notna(x['genres']) else ''
-        
-        # The isinstance() check already handles missing director/actor lists correctly
         directors_str = ' '.join(x['directors']).replace(' ', '') if isinstance(x['directors'], list) else ''
         actors_str = ' '.join(x['actors']).replace(' ', '') if isinstance(x['actors'], list) else ''
-        
         return f"{genres} {directors_str} {actors_str}"
 
     movies_df['soup'] = movies_df.apply(create_soup, axis=1)
@@ -61,14 +53,17 @@ def create_feature_engineering_pipeline(input_path, output_dir):
     print(f"Similarity matrix saved to {sim_matrix_path}")
 
     indices_path = os.path.join(output_dir, 'movie_indices.pkl')
-    indices = pd.Series(movies_df.index, index=movies_df['primaryTitle']).drop_duplicates()
+    
+    # --- THIS IS THE CORRECTED LINE ---
+    # We map the movie title to its integer position in the matrix (0, 1, 2, ...), not its tconst string.
+    indices = pd.Series(range(len(movies_df)), index=movies_df['primaryTitle']).drop_duplicates()
+    
     with open(indices_path, 'wb') as f:
         pickle.dump(indices, f)
     print(f"Movie indices saved to {indices_path}")
 
     print("--- Pipeline Finished ---")
     return movies_df, cosine_sim, indices
-
 
 if __name__ == "__main__":
     HOLLYWOOD_DF_PATH = "data/processed/hollywood_df.pkl"
